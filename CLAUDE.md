@@ -24,6 +24,7 @@ repository. Read it for anything touching game *data*. What follows is what gove
 # Repo Conventions
 
 This project is a git repository published at
+`https://github.com/ElSolid96/SpaceEngineers2BuildPlanner`, forked from
 `https://github.com/viligante8/SpaceEngineers2BuildPlanner`, MIT licensed (`LICENSE`).
 
 It holds one deliverable: the **Build Planner** plugin (`BuildPlanner/`), with unit tests in

@@ -9,6 +9,10 @@ SE2.
 This is a **plugin**, not a data mod. You install it with a launch option, and it won't show up in
 the in-game mod list.
 
+This repository is a fork of
+[viligante8/SpaceEngineers2BuildPlanner](https://github.com/viligante8/SpaceEngineers2BuildPlanner)
+and retains its MIT license and history.
+
 ![Queueing a block with the welder out](docs/images/queueing_items.jpg)
 
 *Right-click an unfinished block with a welder out and it goes on the queue, with only what it still
@@ -16,7 +20,7 @@ needs — this conveyor is 36% built, so it wants the remainder, not a fresh rec
 
 ## Install
 
-1. Grab the latest zip from [Releases](https://github.com/viligante8/SpaceEngineers2BuildPlanner/releases).
+1. Grab the latest zip from [Releases](https://github.com/ElSolid96/SpaceEngineers2BuildPlanner/releases).
 
 2. Extract the whole folder somewhere permanent. **Not** inside the game folder, or the next update
    will wipe it. Something like:

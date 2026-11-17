@@ -114,7 +114,7 @@ Builds are deterministic (`Deterministic` and `PathMap` in `BuildPlanner/BuildPl
 the same commit rebuilds to the same bytes:
 
 ```powershell
-git clone https://github.com/viligante8/SpaceEngineers2BuildPlanner
+git clone https://github.com/ElSolid96/SpaceEngineers2BuildPlanner
 cd SpaceEngineers2BuildPlanner
 git checkout v1.0.3          # the tag matching the release you downloaded
 .\packaging\package.ps1 -Version 1.0.3
@@ -180,4 +180,4 @@ own actions: block names, item counts, component lists.
 
 ## Reporting a problem
 
-Open an issue at https://github.com/viligante8/SpaceEngineers2BuildPlanner/issues
+Open an issue at https://github.com/ElSolid96/SpaceEngineers2BuildPlanner/issues
