@@ -33,6 +33,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="VRage.Multiplayer"><HintPath>$(GameDir)\VRage.Multiplayer.dll</HintPath><Private>false</Private></Reference>
     <PackageReference Include="MonoMod.RuntimeDetour" Version="25.3.3" />
   </ItemGroup>
 

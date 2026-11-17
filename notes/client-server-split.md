@@ -36,7 +36,7 @@ scene.GameClient?.Get<WorldSessionComponent>()?.OwnedSession   // rendering, inp
 The names being identical is what made this so expensive to diagnose. Component count is currently
 the only quick discriminator; prefer testing for the component you actually need.
 
-Verified in game by planting marker items: the server character's inventory reported
+Historical diagnostic (not a safe ownership resolver): the server character's inventory reported
 `9 x Titanium, 1 x Welder Mk 2, 1 x Area Welder Mk1, 1 x Grinder Mk 3, 1 x Drill Mk 2`, matching
 exactly what the player was carrying.
 
@@ -63,9 +63,9 @@ var players = clientSession.SessionComponents?.TryGet<ClientPlayersSessionCompon
 var controller = players?.LocalPlayerController;
 // walk controller.ControlledEntities newest-first; follow SeatComponent.Pilot if seated
 
-// SERVER session — no local controller; enumerate instead
-foreach (var entity in serverSession.GetEntitiesOfType<CharacterComponent>())
-    if (entity.FirstOrDefault<InventoryComponent>() != null) return entity;
+// SERVER session: resolve the exact engine pair of the controlled client character.
+// Never take the first character with an inventory: it may be an NPC.
+var character = PlayerAccess.GetVerifiedServerCharacter(clientSession, serverSession);
 ```
 
 **Use `TryGet`, never `Get`,** for session components. The server session holds

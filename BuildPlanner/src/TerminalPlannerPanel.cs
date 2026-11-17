@@ -64,6 +64,9 @@ internal static class TerminalPlannerPanel
 
     /// <summary>Keen's own work-in-progress marker, hidden rather than shown to a player.</summary>
     private const string WipPlaceholder = "(WIP Pos)";
+    private const string SummaryName = "BuildPlannerComponentSummary";
+    private const string CollapseButtonName = "BuildPlannerCollapseButton";
+    private const string PlannerHostName = "BuildPlannerTopRightHost";
 
     /// <summary>
     /// How many block icons the panel will show, matching Keen's own
@@ -78,9 +81,19 @@ internal static class TerminalPlannerPanel
     private const int MaxShown = 10;
 
     private static TerminalScreenView? _boundScreen;
+    private static TerminalScreenView? _inputOwnerScreen;
     private static TerminalScreenViewModel? _boundViewModel;
     private static BuildPlannerData? _boundData;
     private static PropertyChangedEventHandler? _boundHandler;
+    private static TextBlock? _summary;
+    private static bool _collapsed;
+
+    /// <summary>
+    /// True while the terminal owns mouse input. The welder's right-click context must stay out of
+    /// the processor during this window; ignoring its callback is too late because the click has
+    /// already been consumed before the production queue can cancel an order.
+    /// </summary>
+    internal static bool IsOpen => _inputOwnerScreen != null;
 
     /// <summary>
     /// Nesting depth of an in-progress batch write; while non-zero, notifications are ignored.
@@ -187,15 +200,111 @@ internal static class TerminalPlannerPanel
             return;
         }
 
-        if (panel.IsVisible)
+        HideWipPlaceholder(panel, when);
+        EnsureSummary(panel, when);
+        panel.IsVisible = true;
+        EnsureCollapseButton(screen, decorator, when);
+        Log.Debug($"  terminal[{when}]: planner panel wired in upper-right host");
+    }
+
+    /// <summary>Add a compact control that can reduce the panel without changing its queue.</summary>
+    private static void EnsureCollapseButton(
+        TerminalScreenView screen, LayoutTimer decorator, string when)
+    {
+        if (screen.Content is not Grid terminalRoot)
         {
-            Log.Debug($"  terminal[{when}]: planner panel already visible");
+            Log.Debug($"  terminal[{when}]: terminal root Grid not available for planner host");
             return;
         }
 
-        panel.IsVisible = true;
-        HideWipPlaceholder(panel, when);
-        Log.Write($"  terminal[{when}]: revealed the shipped build planner panel");
+        var host = terminalRoot.Children.OfType<StackPanel>()
+            .FirstOrDefault(candidate => candidate.Name == PlannerHostName);
+        if (host == null)
+        {
+            host = new StackPanel
+            {
+                Name = PlannerHostName,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top,
+                Margin = new Avalonia.Thickness(0, 12, 128, 0),
+                Spacing = 6,
+                ZIndex = 1000
+            };
+            Grid.SetColumn(host, 0);
+            Grid.SetRow(host, 0);
+            Grid.SetColumnSpan(host, Math.Max(1, terminalRoot.ColumnDefinitions.Count));
+            Grid.SetRowSpan(host, Math.Max(1, terminalRoot.RowDefinitions.Count));
+            terminalRoot.Children.Add(host);
+        }
+
+        var button = host.Children.OfType<Button>()
+            .FirstOrDefault(candidate => candidate.Name == CollapseButtonName);
+        if (button == null)
+        {
+            button = new Button
+            {
+                Name = CollapseButtonName,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right
+            };
+            button.Click += (_, _) =>
+            {
+                _collapsed = !_collapsed;
+                ApplyCollapsedState(decorator, button);
+                Log.Write($"  terminal: planner panel {(_collapsed ? "collapsed" : "expanded")}");
+            };
+            host.Children.Add(button);
+        }
+
+        if (!host.Children.Contains(decorator))
+        {
+            if (decorator.Parent is Panel previousParent)
+                previousParent.Children.Remove(decorator);
+            host.Children.Add(decorator);
+            Log.Write($"  terminal[{when}]: moved planner and toggle into upper-right host");
+        }
+
+        ApplyCollapsedState(decorator, button);
+    }
+
+    private static void ApplyCollapsedState(LayoutTimer decorator, Button button)
+    {
+        button.Content = _collapsed ? "Show Build Planner" : "Hide Build Planner";
+        decorator.IsVisible = !_collapsed;
+    }
+
+    /// <summary>Add a compact requirement/carrying/pull projection to Keen's narrow panel.</summary>
+    private static void EnsureSummary(Control panel, string when)
+    {
+        var existing = panel.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(t => t.Name == SummaryName);
+        if (existing != null)
+        {
+            _summary = existing;
+            return;
+        }
+
+        var stack = panel.GetLogicalDescendants().OfType<StackPanel>().FirstOrDefault();
+        if (stack == null)
+        {
+            Log.Debug($"  terminal[{when}]: planner StackPanel not available yet");
+            return;
+        }
+
+        var summary = new TextBlock
+        {
+            Name = SummaryName,
+            Text = "COMPONENTS\nNothing queued",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            FontSize = 14,
+            MaxWidth = 220
+        };
+
+        // Keep Clear as the final action in the vertical panel.
+        var insertAt = Math.Max(0, stack.Children.Count - 1);
+        stack.Children.Insert(insertAt, summary);
+        panel.MinWidth = Math.Max(panel.MinWidth, 220);
+        _summary = summary;
+        Log.Write($"  terminal[{when}]: added component requirement summary");
     }
 
     /// <summary>
@@ -228,6 +337,8 @@ internal static class TerminalPlannerPanel
     {
         if (screen.DataContext is not TerminalScreenViewModel viewModel)
         {
+            if (ReferenceEquals(screen, _inputOwnerScreen)) _inputOwnerScreen = null;
+
             // Closing sets DataContext to null (ScreenView does `base.DataContext = null`). Let go
             // then, rather than waiting for the next terminal to open: the subscription outlives the
             // screen otherwise, and a queue change in between would refill a disposed view model's
@@ -242,6 +353,9 @@ internal static class TerminalPlannerPanel
             Log.Debug($"  terminal[{when}]: data context is not a TerminalScreenViewModel yet");
             return;
         }
+
+        _inputOwnerScreen = screen;
+        BuildPlannerBinding.DisableQueueInput();
 
         if (ReferenceEquals(viewModel, _boundViewModel))
         {
@@ -347,10 +461,27 @@ internal static class TerminalPlannerPanel
                           $" (the panel's layout holds {MaxShown})");
             else
                 Log.Debug($"  terminal: panel now showing {shown} block(s)");
+
+            RefreshSummary();
         }
         catch (Exception ex)
         {
             Log.Error("refreshing the terminal planner panel failed", ex);
+        }
+    }
+
+    internal static void RefreshSummary()
+    {
+        if (_summary == null) return;
+        try
+        {
+            _summary.Text = BuildPlannerBinding.Controller?.TerminalComponentSummary()
+                ?? "COMPONENTS\nPlanner unavailable";
+        }
+        catch (Exception ex)
+        {
+            Log.Error("refreshing terminal component summary failed", ex);
+            _summary.Text = "COMPONENTS\nInventory unavailable";
         }
     }
 
@@ -373,6 +504,7 @@ internal static class TerminalPlannerPanel
         _boundViewModel = null;
         _boundData = null;
         _boundHandler = null;
+        _summary = null;
     }
 
     // ---- The four buttons ------------------------------------------------------------------

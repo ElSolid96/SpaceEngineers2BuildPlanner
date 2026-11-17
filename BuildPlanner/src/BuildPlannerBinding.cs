@@ -323,6 +323,15 @@ internal static class BuildPlannerBinding
     {
         try
         {
+            // A terminal opened while the welder panel was visible can leave this context active
+            // from the previous frame. Never compete with terminal controls: production uses
+            // right-click to cancel queued recipes and inventory uses it for item actions.
+            if (TerminalPlannerPanel.IsOpen)
+            {
+                DisableQueueInput();
+                return;
+            }
+
             if (_queueContext == null || _queueContext.IsActive) return;
 
             _queueContext.Activate();

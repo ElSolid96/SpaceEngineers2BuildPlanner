@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The terminal Build Planner can now be collapsed without clearing or changing its queue.
+- A persistent **Show Build Planner** / **Hide Build Planner** control is anchored immediately left
+  of the terminal close button. The expanded panel opens downward from the same upper-right anchor
+  and does not cover the **X**.
+
+### Fixed
+
+- Component withdrawal now searches the full conveyor-reachable inventory network and counts
+  components already carried by the player.
+- Component notifications no longer remain stuck after withdrawal.
+- Build Planner input no longer intercepts production-queue cancellation inside assembler and
+  smelter screens.
+
 ## 1.1.0 — 2026-08-23
 
 ### Added

@@ -24,6 +24,7 @@ public class BuildPlannerPlugin : IPlugin
         // failure is a known one already fixed or something new. Stamped by packaging/package.ps1
         // from the release tag; a local build reports whatever the csproj default is.
         Log.Write($"BuildPlanner {Version()} initializing...");
+        Log.Write("  withdrawal build: conveyor-streamed-v2; terminal-summary-v1; terminal-input-guard-v1");
     }
 
     private static string Version()

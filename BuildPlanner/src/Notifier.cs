@@ -89,7 +89,7 @@ internal sealed class Notifier
         // Rows, not a sentence. This was once "withdrew A, B — still short C", which the HUD trimmed
         // at the dash, losing the half the player most needs.
         Gained(transferred);
-        PerItem(missing, "short", NotificationType.Error);
+        MissingSummary(missing);
     }
 
     /// <summary>
@@ -173,7 +173,28 @@ internal sealed class Notifier
     }
 
     internal void NothingAvailable(IReadOnlyList<ItemAmount> missing) =>
-        PerItem(missing, "missing", NotificationType.Error);
+        MissingSummary(missing);
+
+    /// <summary>
+    /// Missing parts share one bounded HUD row. Separate rows are queued by the HUD's small stack
+    /// and repeated attempts make them appear permanent even though each row has a timer.
+    /// </summary>
+    private void MissingSummary(IReadOnlyList<ItemAmount> missing)
+    {
+        if (missing == null || missing.Count == 0) return;
+
+        var parts = new List<string>();
+        foreach (var item in missing)
+        {
+            if (item.Item == null) continue;
+            Log.Debug($"  debug: missing {(int)item.Amount} x {item.Item.DisplayName}");
+            if (parts.Count < 2) parts.Add($"{(int)item.Amount}x {item.Item.DisplayName}");
+        }
+
+        var extra = Math.Max(0, missing.Count - parts.Count);
+        var suffix = extra > 0 ? $" +{extra} more" : string.Empty;
+        Warning($"Build Planner: missing {string.Join(", ", parts)}{suffix}");
+    }
 
     internal void Producing(IReadOnlyList<ProductionOrder> orders) =>
         PerItem(AsItems(orders), "making", NotificationType.Info);

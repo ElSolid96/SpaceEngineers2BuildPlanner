@@ -97,9 +97,15 @@ Plates at an assembler with no iron and the game raises the ingot and ore jobs i
 Producing never clears your queue. The parts don't exist yet, so you still need to come back and
 withdraw them.
 
-**Seeing the queue.** Open any terminal and there's a Build Planner box on the right listing what
+**Seeing the queue.** Open any terminal and the Build Planner appears in the upper-right, immediately
+to the left of the terminal's **X**, listing what
 you've queued. **Produce** makes everything on it, **Clear** empties it, and each block has its own
 buttons — left-click to produce just that one, right-click to drop it.
+
+Use **Hide Build Planner** when it obstructs the terminal. The complete panel collapses upward,
+leaving only **Show Build Planner** beside the **X**. Expanding it opens the panel downward from the
+same anchor. Neither state covers the close button, and hiding the panel does not clear or otherwise
+change the queue.
 
 <img src="docs/images/build_planner_ui.jpg" alt="The Build Planner panel in a terminal" width="420">
 

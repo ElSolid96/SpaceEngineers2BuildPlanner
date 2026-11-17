@@ -155,13 +155,14 @@ internal sealed class BuildPlannerQueue
     /// <c>Items</c> is the post-processed, per-block result — the same figure the block tooltip
     /// shows the player.
     /// </remarks>
-    internal List<ItemAmount> GetRequiredComponents(int multiplier = 1) => Total(_entries, multiplier);
+    internal List<ItemAmount> GetRequiredComponents(int multiplier = 1, bool log = true)
+        => Total(_entries, multiplier, log);
 
     /// <summary>
     /// Merge a set of queue entries into per-item totals. The whole queue and a single entry go
     /// through the same code so the panel's per-block button cannot drift from the keybind.
     /// </summary>
-    private List<ItemAmount> Total(IEnumerable<Entry> entries, int multiplier)
+    private List<ItemAmount> Total(IEnumerable<Entry> entries, int multiplier, bool log = true)
     {
         var totals = new Dictionary<ItemDefinition, FixedPoint>();
         var counted = 0;
@@ -183,12 +184,12 @@ internal sealed class BuildPlannerQueue
             // Always logged. This line is what makes a wrong queue visible: "1 x Steel Plate" for a
             // heavy armor block is obviously wrong at a glance, and burying it behind the debug flag
             // is how a queueing bug got reported as a withdrawal bug.
-            Log.Write($"  requires {(int)entry.Value} x {entry.Key.DisplayName}");
+            if (log) Log.Write($"  requires {(int)entry.Value} x {entry.Key.DisplayName}");
         }
 
         // Counts the entries actually totalled, not the whole queue: the panel's per-block button
         // passes one entry, and "12 queued blocks need nothing further" would be a lie about it.
-        if (result.Count == 0)
+        if (log && result.Count == 0)
             Log.Write($"  {counted} queued block(s) need nothing further");
 
         return result;

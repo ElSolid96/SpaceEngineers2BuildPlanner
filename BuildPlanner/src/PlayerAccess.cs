@@ -1,6 +1,7 @@
 using System;
 using Keen.Game2.Client.GameSystems.PlayerControl;
 using Keen.Game2.Simulation.WorldObjects.Items;
+using Keen.Game2.Simulation.WorldObjects.Tools;
 using Keen.VRage.Core.Game.Data;
 using Keen.VRage.Core.Game.Systems;
 using Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer;
@@ -20,6 +21,43 @@ namespace BuildPlanner;
 /// </summary>
 internal static class PlayerAccess
 {
+    // Instance pairing is maintained by the engine transport, never inferred from names.
+    internal static Entity? GetVerifiedServerCharacter(Session? client, Session? server)
+    {
+        var controlled = client == null ? null : GetLocalCharacter(client);
+        var character = ReplicationAccess.ResolveEntity(client, server, controlled, "character");
+        if (character?.TryGet<Keen.Game2.Simulation.WorldObjects.Characters.CharacterComponent>() != null)
+            return character;
+        Log.Write("  character: mapped entity is not a character; refusing operation");
+        return null;
+    }
+
+    internal static string TargetFailure { get; private set; } = "Build Planner: no interaction target";
+
+    internal static Entity? GetVerifiedServerTarget(Session? client, Session? server)
+    {
+        TargetFailure = "Build Planner: no interaction target";
+        var character = GetClientCharacter(client);
+        if (character == null) return null;
+        try
+        {
+            var aimed = character.FirstOrDefault<IInteractedEntityProvider>()?.InteractedEntity;
+            if (aimed == null)
+            {
+                Log.Write("  target: interaction provider has no target");
+                return null;
+            }
+            TargetFailure = "Build Planner: target detected, but its server pairing is unavailable (see log)";
+            return ReplicationAccess.ResolveEntity(client, server, aimed, "target");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("resolving client interaction target failed", ex);
+            TargetFailure = "Build Planner: target resolution failed (see log)";
+            return null;
+        }
+    }
+
     /// <summary>Bound on the parent walk so a malformed hierarchy cannot loop forever.</summary>
     private const int MaxHierarchyDepth = 8;
 
@@ -36,28 +74,8 @@ internal static class PlayerAccess
             {
                 Log.Debug("  debug: no LocalPlayerController (likely the server session)");
 
-                // Server session: there is no local controller, but the character entities are all
-                // here. Take the one that owns an inventory - this is the half that actually holds
-                // the player's items.
-                if (session != null)
-                {
-                    foreach (var entity in session.GetEntitiesOfType<
-                                 Keen.Game2.Simulation.WorldObjects.Characters.CharacterComponent>())
-                    {
-                        if (entity == null) continue;
-
-                        var inventory = entity.FirstOrDefault<InventoryComponent>();
-                        Log.Debug($"  debug: server character '{entity.DebugName}'" +
-                                  $" components={entity.Components.Length} hasInventory={inventory != null}");
-
-                        if (inventory != null)
-                        {
-                            LogInventoryContents(entity.DebugName, inventory);
-                            return entity;
-                        }
-                    }
-                }
-
+                // Never select the first inventory-bearing server character: it may be an NPC.
+                // Callers needing the player must use GetVerifiedServerCharacter.
                 return null;
             }
 
@@ -112,86 +130,15 @@ internal static class PlayerAccess
     internal static InventoryComponent? GetCharacterInventory(Entity? character, Session? session = null)
     {
         if (character == null) return null;
-
-        try
+        // The exact replicated server character owns its tagged main inventory.
+        // Never search ancestors, tools, children or other characters for a destination.
+        var inventory = character.TryGet<InventoryComponent>(StringId.Get("Inventory"));
+        if (inventory == null)
         {
-            // Use the engine's own helper rather than looking the component up directly.
-            //
-            // In-game diagnostics proved the character entity (CompositeCharacterServer, 58
-            // components) carries NO InventoryComponent at all — so tag lookups, untagged lookups
-            // and a direct component scan all correctly found nothing. The inventory lives further
-            // up the entity hierarchy.
-            //
-            // FirstInventoryAdapterComponent.GetFirstInventory does exactly this: FirstOrDefault<T>
-            // on the entity (which resolves interfaces, unlike TryGet), then recurses through
-            // ParentData. Note it asserts rather than returning null when nothing is found, hence
-            // the manual walk below instead of calling it directly.
-            var direct = character.FirstOrDefault<InventoryComponent>();
-            if (direct != null) return direct;
-
-            var current = character;
-            for (var depth = 0; depth < MaxHierarchyDepth; depth++)
-            {
-                if (!current.Data.TryGet<ParentData>(out var parentData)) break;
-
-                var parent = parentData.GetEntity(current.Scene);
-                if (parent == null) break;
-
-                var inherited = parent.FirstOrDefault<InventoryComponent>();
-                if (inherited != null)
-                {
-                    Log.Debug($"  debug: inventory found on parent entity '{parent.DebugName}'");
-                    return inherited;
-                }
-
-                current = parent;
-            }
-
-            // Search DOWN the hierarchy too. HierarchyComponent.Children is public and the character
-            // owns a HierarchyComponent, so child entities (equipped tools, attached rigs) are
-            // reachable. Confirmed by diagnostics: the character itself and all its ancestors have no
-            // InventoryComponent, so if the player has an inventory at all it must hang below.
-            var fromChildren = FindInChildren<InventoryComponent>(character, 0);
-            if (fromChildren != null)
-            {
-                Log.Debug("  debug: inventory found on a child entity");
-                return fromChildren;
-            }
-
-            // Nothing in the character's own entity graph has an inventory. Shipping mission code
-            // (ItemsInPlayerInventoryProgressTrackerComponent) locates player inventories with
-            //     Session.GetEntitiesOfType<CharacterComponent>()  then  entity.All<InventoryComponent>()
-            // so ask the session for every character entity and take the one that actually has an
-            // inventory. Diagnostics show ours is the server-side composite, which carries none.
-            if (session != null)
-            {
-                var fromSession = FindInventoryAmongCharacters(session, character);
-                if (fromSession != null) return fromSession;
-            }
-            else
-            {
-                Log.Debug("  debug: no session passed; cannot search character entities");
-            }
-
-            Log.Debug($"  debug: no InventoryComponent on '{DescribeEntity(character)}', its parents, or its children");
-
-            // Full component dump, chunked so nothing is lost to log-line truncation. The filtered
-            // summary above hides exactly the component whose real name we need.
+            Log.Write($"  inventory: verified character '{character}' has no main Inventory slot; refusing operation");
             DumpAllComponents(character);
-
-            // The character is a client/server pair in VRAGE3; if we are holding the server half and
-            // inventories live on the client half (or vice versa), the counterpart is the answer.
-            // Log the hierarchy so the relationship is visible rather than assumed.
-            DumpHierarchy(character);
-            DumpChildren(character, 0);
-
-            return null;
         }
-        catch (Exception ex)
-        {
-            Log.Error("GetCharacterInventory failed", ex);
-            return null;
-        }
+        return inventory;
     }
 
     /// <summary>
@@ -572,47 +519,6 @@ internal static class PlayerAccess
 
     /// <summary>Cap on items listed per inventory so a full container cannot flood the log.</summary>
     private const int MaxItemsLogged = 8;
-
-    /// <summary>
-    /// Find the inventory by asking the session for every character entity.
-    ///
-    /// Mirrors ItemsInPlayerInventoryProgressTrackerComponent: GetEntitiesOfType&lt;CharacterComponent&gt;
-    /// then All&lt;InventoryComponent&gt;. Needed because the entity the player controls is the
-    /// server-side composite, which has no inventory of its own - verified in game across its whole
-    /// parent and child graph.
-    /// </summary>
-    private static InventoryComponent? FindInventoryAmongCharacters(Session session, Entity ourCharacter)
-    {
-        try
-        {
-            var examined = 0;
-            InventoryComponent? firstFound = null;
-
-            foreach (var entity in session.GetEntitiesOfType<
-                         Keen.Game2.Simulation.WorldObjects.Characters.CharacterComponent>())
-            {
-                if (entity == null) continue;
-                examined++;
-
-                var inventory = entity.FirstOrDefault<InventoryComponent>();
-                if (inventory == null) continue;
-
-                var isOurs = ReferenceEquals(entity, ourCharacter);
-                Log.Debug($"  debug: character entity '{entity.DebugName}' HAS an inventory (isOurs={isOurs})");
-                LogInventoryContents(entity.DebugName, inventory);
-
-                firstFound ??= inventory;
-            }
-
-            Log.Debug($"  debug: examined {examined} character entities in the session");
-            return firstFound;
-        }
-        catch (Exception ex)
-        {
-            Log.Error("FindInventoryAmongCharacters failed", ex);
-            return null;
-        }
-    }
 
     /// <summary>
     /// The client session's character - the half that carries client-only components such as

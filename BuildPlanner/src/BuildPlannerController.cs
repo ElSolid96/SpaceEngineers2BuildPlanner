@@ -30,6 +30,8 @@ internal sealed class BuildPlannerController
 {
     private readonly BuildPlannerQueue _queue = new BuildPlannerQueue();
     private readonly Notifier _notifier;
+    private bool _withdrawalPending;
+    private long _queueRevision;
     private readonly Func<Session?> _session;
     private readonly Func<Session?> _clientSession;
 
@@ -44,7 +46,7 @@ internal sealed class BuildPlannerController
 
         // One place the mirror is driven from. Call sites used to each remember to sync, and the
         // withdrawal path did not - see BuildPlannerQueue.Changed for what that cost.
-        _queue.Changed = SyncMirror;
+        _queue.Changed = () => { _queueRevision++; SyncMirror(); };
     }
 
     /// <summary>Push the queue into the engine's BuildPlannerData, and thus into the terminal panel.</summary>
@@ -230,79 +232,147 @@ internal sealed class BuildPlannerController
         }
     }
 
-    private void Withdraw(int multiplier, bool keepQueue)
+    private void Withdraw(int multiplier, bool keepQueue) => _ = WithdrawAsync(multiplier, keepQueue);
+
+    private async System.Threading.Tasks.Task WithdrawAsync(int multiplier, bool keepQueue)
     {
-        if (_queue.Count == 0)
+        if (_withdrawalPending)
         {
-            _notifier.NothingQueued();
+            Log.Write("  withdrawal: previous request still pending; repeated input ignored");
             return;
         }
+        _withdrawalPending = true;
+        var revision = _queueRevision;
+        try
+        {
+            if (_queue.Count == 0)
+            {
+                _notifier.NothingQueued();
+                return;
+            }
+
+            var session = _session();
+            if (session == null)
+            {
+                // Every early exit reports itself: a silent return here made the withdrawal look like a
+                // dead keybind for several test rounds, when the engine trace proved the key was
+                // dispatching correctly all along.
+                _notifier.Warning("Build Planner: no active session");
+                return;
+            }
+
+            var character = PlayerAccess.GetVerifiedServerCharacter(_clientSession(), session);
+            if (character == null)
+            {
+                _notifier.Warning("Build Planner: could not find your character");
+                return;
+            }
+
+            var destination = PlayerAccess.GetCharacterInventory(character, session);
+            if (destination == null)
+            {
+                _notifier.Warning("Build Planner: could not find your inventory");
+                return;
+            }
+
+            var target = PlayerAccess.GetVerifiedServerTarget(_clientSession(), session);
+            if (target == null)
+            {
+                _notifier.Warning(PlayerAccess.TargetFailure);
+                return;
+            }
+
+            var sources = InventorySources.CollectFrom(target);
+            if (sources.Count == 0)
+            {
+                // Aiming at something real that simply holds nothing, which is a different problem from
+                // aiming at nothing - and the one a player is most likely to misdiagnose.
+                _notifier.NothingReachable(DescribeBlock(target));
+                return;
+            }
+
+            var required = _queue.GetRequiredComponents(multiplier);
+            var client = _clientSession();
+            if (client == null || !TransferAccess.CanUse(client, session, character, target))
+            {
+                _notifier.Warning("Build Planner: target out of reach or inventory access denied (see log)");
+                return;
+            }
+            var result = await StreamedWithdrawal.WithdrawAsync(client, session, character, target, destination, sources, required);
+
+            switch (result.Outcome)
+            {
+                case WithdrawalOutcome.AlreadySatisfied:
+                    _notifier.AlreadyHaveEverything();
+                    if (!keepQueue && revision == _queueRevision) _queue.Clear();
+                    break;
+
+                case WithdrawalOutcome.Complete:
+                    _notifier.Withdrew(result.Transferred);
+                    if (!keepQueue && revision == _queueRevision) _queue.Clear();
+                    break;
+
+                case WithdrawalOutcome.Partial:
+                    // Keep the queue regardless: the player still needs the remainder, and clearing it
+                    // would silently discard what they asked for.
+                    _notifier.WithdrewPartial(result.Transferred, result.StillMissing);
+                    break;
+
+                case WithdrawalOutcome.Nothing:
+                    _notifier.NothingAvailable(result.StillMissing);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("withdrawal request failed; queue retained", ex);
+            _notifier.Warning("Build Planner: withdrawal interrupted; queue kept (see log)");
+        }
+        finally
+        {
+            _withdrawalPending = false;
+            TerminalPlannerPanel.RefreshSummary();
+        }
+    }
+
+    /// <summary>
+    /// Compact aggregate for the terminal panel. Carried components are subtracted once from the
+    /// whole queue, so the same stack is never credited independently to several queued blocks.
+    /// </summary>
+    internal string TerminalComponentSummary()
+    {
+        if (_queue.Count == 0) return "COMPONENTS\nNothing queued";
 
         var session = _session();
-        if (session == null)
+        var character = PlayerAccess.GetVerifiedServerCharacter(_clientSession(), session);
+        var inventory = character == null || session == null
+            ? null
+            : PlayerAccess.GetCharacterInventory(character, session);
+        if (inventory == null) return "COMPONENTS\nInventory unavailable";
+
+        var required = _queue.GetRequiredComponents(log: false);
+        var lines = new List<string> { "COMPONENTS" };
+        const int MaxItems = 5;
+        var shown = 0;
+
+        foreach (var item in required)
         {
-            // Every early exit reports itself: a silent return here made the withdrawal look like a
-            // dead keybind for several test rounds, when the engine trace proved the key was
-            // dispatching correctly all along.
-            _notifier.Warning("Build Planner: no active session");
-            return;
+            if (item.Item == null) continue;
+            if (shown >= MaxItems) break;
+
+            var need = (int)item.Amount;
+            var carried = Math.Min(need, (int)inventory.CountItem(item.Item));
+            var pull = Math.Max(0, need - carried);
+            lines.Add(pull == 0
+                ? $"{item.Item.DisplayName}: {carried}/{need} ready"
+                : $"{item.Item.DisplayName}: {carried}/{need}  pull {pull}");
+            shown++;
         }
 
-        var character = PlayerAccess.GetLocalCharacter(session);
-        if (character == null)
-        {
-            _notifier.Warning("Build Planner: could not find your character");
-            return;
-        }
-
-        var destination = PlayerAccess.GetCharacterInventory(character, session);
-        if (destination == null)
-        {
-            _notifier.Warning("Build Planner: could not find your inventory");
-            return;
-        }
-
-        var target = GetAimedEntity(character);
-        if (target == null)
-        {
-            _notifier.NoTarget();
-            return;
-        }
-
-        var sources = InventorySources.CollectFrom(target);
-        if (sources.Count == 0)
-        {
-            // Aiming at something real that simply holds nothing, which is a different problem from
-            // aiming at nothing - and the one a player is most likely to misdiagnose.
-            _notifier.NothingReachable(DescribeBlock(target));
-            return;
-        }
-
-        var required = _queue.GetRequiredComponents(multiplier);
-        var result = ComponentWithdrawal.Withdraw(destination, sources, required);
-
-        switch (result.Outcome)
-        {
-            case WithdrawalOutcome.AlreadySatisfied:
-                _notifier.AlreadyHaveEverything();
-                if (!keepQueue) _queue.Clear();
-                break;
-
-            case WithdrawalOutcome.Complete:
-                _notifier.Withdrew(result.Transferred);
-                if (!keepQueue) _queue.Clear();
-                break;
-
-            case WithdrawalOutcome.Partial:
-                // Keep the queue regardless: the player still needs the remainder, and clearing it
-                // would silently discard what they asked for.
-                _notifier.WithdrewPartial(result.Transferred, result.StillMissing);
-                break;
-
-            case WithdrawalOutcome.Nothing:
-                _notifier.NothingAvailable(result.StillMissing);
-                break;
-        }
+        var extra = required.Count - shown;
+        if (extra > 0) lines.Add($"+{extra} more component type(s)");
+        if (shown == 0) lines.Add("No components needed");
+        return string.Join("\n", lines);
     }
 
     /// <summary>
@@ -358,7 +428,7 @@ internal sealed class BuildPlannerController
             return;
         }
 
-        var character = PlayerAccess.GetLocalCharacter(session);
+        var character = PlayerAccess.GetVerifiedServerCharacter(_clientSession(), session);
         if (character == null)
         {
             _notifier.Warning("Build Planner: could not find your character");
@@ -374,10 +444,10 @@ internal sealed class BuildPlannerController
             return;
         }
 
-        var target = GetAimedEntity(character);
+        var target = PlayerAccess.GetVerifiedServerTarget(_clientSession(), session);
         if (target == null)
         {
-            _notifier.NoTarget();
+            _notifier.Warning(PlayerAccess.TargetFailure);
             return;
         }
 
@@ -521,7 +591,7 @@ internal sealed class BuildPlannerController
             return;
         }
 
-        var character = PlayerAccess.GetLocalCharacter(session);
+        var character = PlayerAccess.GetVerifiedServerCharacter(_clientSession(), session);
         if (character == null)
         {
             // Named separately from the inventory failure below. Passing a null character on and
@@ -538,10 +608,10 @@ internal sealed class BuildPlannerController
             return;
         }
 
-        var target = GetAimedEntity(character);
+        var target = PlayerAccess.GetVerifiedServerTarget(_clientSession(), session);
         if (target == null)
         {
-            _notifier.NoTarget();
+            _notifier.Warning(PlayerAccess.TargetFailure);
             return;
         }
 
